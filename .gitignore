@@ -1,0 +1,21 @@
+# Environment secrets
+.env
+
+# Flask and Python caching
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.venv/
+venv/
+
+# Candidate uploads and local scratch results
+uploads/*
+!uploads/.gitkeep
+scratch_results.json
+scratch/
+
+# OS files
+.DS_Store
+Thumbs.db

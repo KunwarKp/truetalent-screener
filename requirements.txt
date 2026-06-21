@@ -1,0 +1,11 @@
+flask
+python-dotenv
+requests
+beautifulsoup4
+google-generativeai
+werkzeug
+openai
+flask-cors
+pypdf
+gunicorn
+pytest

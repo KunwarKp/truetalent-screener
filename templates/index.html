@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TrueTalent Verification Hub</title>
+    <link rel="stylesheet" href="/static/index.css" id="main-stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <style>
+        .candidate-link {
+            color: #818cf8;
+            text-decoration: none;
+            font-weight: 600;
+            transition: color 0.2s, text-decoration 0.2s;
+        }
+        .candidate-link:hover {
+            color: var(--success);
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="glass-bg"></div>
+    <main class="dashboard-container">
+        <header class="app-header">
+            <div class="logo">
+                <span class="pulse-dot"></span>
+                <h1>TrueTalent</h1>
+            </div>
+        </header>
+
+        <section class="grid-layout">
+            <!-- Left Panel: Ingestion -->
+            <div class="glass-panel" id="input-section">
+                <h2>Candidate Ingestion</h2>
+                <form id="upload-form" class="form-container">
+                    <div class="form-group">
+                        <label for="job_description">Target Job Description</label>
+                        <textarea id="job_description" placeholder="Paste target requirements and skills here..." aria-label="Target Job Description text area" required></textarea>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="resume">Upload Candidate Resume (txt/pdf/json/jsonl)</label>
+                        <div class="file-dropzone" id="dropzone" tabindex="0" role="button" aria-label="Upload candidate resume file dropzone. Click or press enter to choose files.">
+                            <span class="icon" role="img" aria-label="Folder emoji">📂</span>
+                            <span class="text">Click to choose or drag resumes/data here</span>
+                            <input type="file" id="resume" accept=".txt,.pdf,.json,.jsonl" multiple aria-label="File upload selector" required>
+                        </div>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary" id="btn-upload" aria-label="Run Candidate Gap Analysis">Run Gap Analysis</button>
+                </form>
+            </div>
+
+            <!-- Middle Panel: Verification Intake Form -->
+            <div class="glass-panel dynamic-questions-panel" id="intake-section">
+                <h2>Dynamic Verification Intake</h2>
+                <p class="section-desc">LLM-generated queries asking for validation of subjective resume items.</p>
+                <div id="questions-container" class="placeholder-box">
+                    <p>Upload a resume and job description to generate clarification questions.</p>
+                </div>
+                <button type="button" class="btn btn-secondary hidden" id="btn-submit-answers" aria-label="Verify Candidate Portfolio and Claims">Verify Portfolio & Claims</button>
+            </div>
+
+            <!-- Right Panel: Executive Synthesis & Scoring Matrix -->
+            <div class="glass-panel results-panel" id="results-section">
+                <h2>Executive Synthesis & Matrix</h2>
+                <div id="results-container" class="placeholder-box">
+                    <p>Results will be calculated once candidate feedback and portfolios are verified.</p>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Floating status toast notification -->
+    <div id="status-toast" class="toast hidden">
+        <span id="toast-text">Analyzing resume structure...</span>
+    </div>
+
+    <script>
+        const getApiUrl = (path) => {
+            if (window.location.protocol === 'file:') {
+                return 'http://127.0.0.1:5000' + path;
+            }
+            return path;
+        };
+        if (window.location.protocol === 'file:') {
+            document.getElementById('main-stylesheet').href = 'http://127.0.0.1:5000/static/index.css';
+        }
+
+        let currentCandidateId = null;
+        let lastBulkData = null;
+
+        const uploadForm = document.getElementById('upload-form');
+        const resumeInput = document.getElementById('resume');
+        const dropzone = document.getElementById('dropzone');
+        const btnUpload = document.getElementById('btn-upload');
+        
+        const questionsContainer = document.getElementById('questions-container');
+        const btnSubmitAnswers = document.getElementById('btn-submit-answers');
+        const resultsContainer = document.getElementById('results-container');
+        const toast = document.getElementById('status-toast');
+        const toastText = document.getElementById('toast-text');
+
+        // File drop styling helper
+        dropzone.addEventListener('click', () => resumeInput.click());
+        dropzone.addEventListener('keydown', (e) => {
+            if (e.key === ' ' || e.key === 'Enter') {
+                e.preventDefault();
+                resumeInput.click();
+            }
+        });
+        resumeInput.addEventListener('change', () => {
+            if(resumeInput.files.length) {
+                const count = resumeInput.files.length;
+                dropzone.querySelector('.text').innerText = count === 1 ? resumeInput.files[0].name : `${count} resumes selected`;
+            }
+        });
+
+        function showToast(message, duration = 3000) {
+            toastText.innerText = message;
+            toast.classList.remove('hidden');
+            setTimeout(() => {
+                toast.classList.add('hidden');
+            }, duration);
+        }
+
+        // Upload handler
+        uploadForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            btnUpload.disabled = true;
+            showToast("Ingesting candidate profiles & routing classifier...");
+
+            const formData = new FormData();
+            for (let i = 0; i < resumeInput.files.length; i++) {
+                formData.append('resume', resumeInput.files[i]);
+            }
+            formData.append('job_description', document.getElementById('job_description').value);
+
+            try {
+                const response = await fetch(getApiUrl('/api/upload'), {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+                
+                if (data.error) {
+                    showToast("Error: " + data.error);
+                    btnUpload.disabled = false;
+                    return;
+                }
+
+                if (data.is_bulk) {
+                    lastBulkData = data;
+                    renderBulkResults(data);
+                    showToast("Batch profile check complete!");
+                } else {
+                    currentCandidateId = data.candidate_id;
+                    renderQuestions(data.questions, data.agent_2_status, data.agent_2_feedback, data.vetting);
+                    showToast("Profile parsed. Intake questions verified.");
+                }
+            } catch (err) {
+                showToast("System connection failure");
+                btnUpload.disabled = false;
+            }
+        });
+
+        function renderQuestions(questions, status, feedback, vetting) {
+            // Restore dynamic intake form
+            document.getElementById('intake-section').classList.remove('hidden');
+            
+            let vettingHtml = '';
+            if (vetting) {
+                vettingHtml = `
+                    <div class="vetting-card">
+                        <h3>Vetted Profile: <span>${vetting.classification}</span></h3>
+                        
+                        <div class="vetting-grid">
+                            <div class="vetting-col">
+                                <strong>Certifications Done</strong>
+                                <ul>${vetting.certifications.map(c => `<li>📜 ${c}</li>`).join('')}</ul>
+                            </div>
+                            <div class="vetting-col">
+                                <strong>Education & Study</strong>
+                                <ul>${vetting.education.map(e => `<li>🎓 ${e}</li>`).join('')}</ul>
+                            </div>
+                        </div>
+
+                        <div class="vetting-block-item">
+                            <strong>Skills Extracted:</strong>
+                            <p class="vetting-skills">${vetting.skills.join(', ')}</p>
+                        </div>
+
+                        <div class="vetting-analysis-row">
+                            <div class="vetting-item plus-box">
+                                <strong>Candidate Plus Points</strong>
+                                <p>${vetting.plus_points}</p>
+                            </div>
+                            <div class="vetting-item gap-box">
+                                <strong>Gaps to Ignore</strong>
+                                <p>${vetting.ignorable_gaps}</p>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            questionsContainer.innerHTML = `
+                <div class="agent-verification-badge">
+                    <span class="badge-status status-${status.toLowerCase().replace(/[^a-z]/g, '')}">🛡️ Agent 2: ${status}</span>
+                    <p class="badge-feedback">${feedback}</p>
+                </div>
+                ${vettingHtml}
+            `;
+            if (questions && questions.length > 0) {
+                questions.forEach((q, idx) => {
+                    const qDiv = document.createElement('div');
+                    qDiv.className = 'question-block';
+                    qDiv.innerHTML = `
+                        <label>${idx + 1}. ${q}</label>
+                        <textarea class="candidate-answer" placeholder="Enter details to support your claim..."></textarea>
+                    `;
+                    questionsContainer.appendChild(qDiv);
+                });
+                btnSubmitAnswers.classList.remove('hidden');
+                resultsContainer.innerHTML = `<p>Results will be calculated once candidate feedback and portfolios are verified.</p>`;
+            } else {
+                const infoDiv = document.createElement('div');
+                infoDiv.className = 'placeholder-box';
+                infoDiv.style.minHeight = '100px';
+                infoDiv.innerHTML = `<p>No further clarification questions needed for this profile.</p>`;
+                questionsContainer.appendChild(infoDiv);
+                btnSubmitAnswers.classList.add('hidden');
+                
+                // Auto-submit empty answers to calculate synthesis results immediately
+                setTimeout(() => {
+                    triggerVerification([]);
+                }, 300);
+            }
+            btnUpload.disabled = false;
+        }
+
+        async function triggerVerification(answers) {
+            btnSubmitAnswers.disabled = true;
+            showToast("Initializing Dual-Bucket concurrency processing...");
+
+            try {
+                const response = await fetch(getApiUrl('/api/submit_answers'), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        candidate_id: currentCandidateId,
+                        answers: answers
+                    })
+                });
+                const result = await response.json();
+
+                if (result.error) {
+                    showToast("Error: " + result.error);
+                    btnSubmitAnswers.disabled = false;
+                    return;
+                }
+
+                renderResults(result);
+                showToast("RAG Synthesized profile matching completed!");
+            } catch (err) {
+                showToast("Verification evaluation failed.");
+                btnSubmitAnswers.disabled = false;
+            }
+        }
+
+        // Intake Answers submission handler
+        btnSubmitAnswers.addEventListener('click', () => {
+            const textareas = document.querySelectorAll('.candidate-answer');
+            const answers = Array.from(textareas).map(t => t.value);
+            triggerVerification(answers);
+        });
+
+        function renderResults(res) {
+            resultsContainer.innerHTML = `
+                <div class="score-card">
+                    <div class="score-circle">
+                        <span class="number">${res.overall_score}%</span>
+                        <span class="label">Overall Fit</span>
+                    </div>
+                </div>
+                <div class="sub-scores">
+                    <div class="bar-group">
+                        <div class="bar-labels"><span>Qualifications Semantic Fit</span> <span>${res.semantic_fit_score}%</span></div>
+                        <div class="bar-track"><div class="bar-fill" style="width: ${res.semantic_fit_score}%"></div></div>
+                    </div>
+                    <div class="bar-group">
+                        <div class="bar-labels"><span>Portfolio External Signal</span> <span>${res.external_signal_score}%</span></div>
+                        <div class="bar-track"><div class="bar-fill" style="width: ${res.external_signal_score}%"></div></div>
+                    </div>
+                </div>
+                <div class="executive-block">
+                    <h3>Executive Summary</h3>
+                    <p>${res.executive_synthesis}</p>
+                </div>
+                <div class="accordion-item">
+                    <h4>Bucket A Integration (Claims & Feedback)</h4>
+                    <p class="insight-text">${res.bucket_a_insights}</p>
+                </div>
+                <div class="accordion-item">
+                    <h4>Bucket B Portfolio Synthesis (Scraped data)</h4>
+                    <p class="insight-text">${res.bucket_b_insights}</p>
+                </div>
+                <div class="accordion-item">
+                    <h4>RAG Retrieved Context Reference</h4>
+                    <pre class="rag-context">${res.context_retrieved_rag}</pre>
+                </div>
+            `;
+            btnSubmitAnswers.disabled = false;
+        }
+
+        const findCandidateIdByFilename = (filename) => {
+            if (!lastBulkData || !lastBulkData.candidates) return null;
+            const candidate = lastBulkData.candidates.find(c => c.filename === filename);
+            return candidate ? candidate.id : null;
+        };
+
+        function renderBulkResults(data) {
+            // Hide single-select intake during bulk renders to keep UI clean
+            document.getElementById('intake-section').classList.add('hidden');
+            
+            // Build the shortlist list layout
+            const selectedHtml = data.selected_resumes.length 
+                ? data.selected_resumes.map(name => {
+                    const cid = findCandidateIdByFilename(name);
+                    return `<li>🟢 <a href="#" onclick="viewCandidateDetails('${cid}'); return false;" class="candidate-link">${name}</a></li>`;
+                }).join('')
+                : `<li>None</li>`;
+                
+            const underReviewHtml = data.under_review_resumes.length
+                ? data.under_review_resumes.map(name => {
+                    const cid = findCandidateIdByFilename(name);
+                    return `<li>🟡 <a href="#" onclick="viewCandidateDetails('${cid}'); return false;" class="candidate-link">${name}</a></li>`;
+                }).join('')
+                : `<li>None</li>`;
+
+            // Sort candidates by score descending
+            const sortedCandidates = [...data.candidates].sort((a,b) => b.score - a.score);
+
+            const tableRows = sortedCandidates.map(c => `
+                <tr>
+                    <td><a href="#" onclick="viewCandidateDetails('${c.id}'); return false;" class="candidate-link">${c.filename}</a></td>
+                    <td>${c.classification.replace(' (JSON Profile)', '').replace(' (Honeypot)', ' (Honeypot)')}</td>
+                    <td class="table-score ${c.score >= 80 ? 'text-green' : 'text-yellow'}">${c.score}%</td>
+                </tr>
+            `).join('');
+
+            resultsContainer.innerHTML = `
+                <div class="bulk-results-box">
+                    <h3>Shortlisted Filenames (Score &ge; 80%)</h3>
+                    <ul class="filename-list selected-list">
+                        ${selectedHtml}
+                    </ul>
+                    
+                    <h3>Under Review Filenames (Score &lt; 80%)</h3>
+                    <ul class="filename-list under-review-list">
+                        ${underReviewHtml}
+                    </ul>
+
+                    <h3 style="margin-top:1.5rem;">Candidate Rankings</h3>
+                    <table class="rank-table">
+                        <thead>
+                            <tr>
+                                <th>Filename</th>
+                                <th>Domain / Role</th>
+                                <th>Match Score</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${tableRows}
+                        </tbody>
+                    </table>
+                </div>
+            `;
+            btnUpload.disabled = false;
+        }
+
+        async function viewCandidateDetails(id) {
+            if (!id) return;
+            showToast("Loading candidate verification details...");
+            currentCandidateId = id;
+            
+            try {
+                const response = await fetch(getApiUrl(`/api/candidate/${id}`));
+                const data = await response.json();
+                
+                if (data.error) {
+                    showToast("Error: " + data.error);
+                    return;
+                }
+                
+                // Show intake panel and render detail card with a back button
+                const intakeSection = document.getElementById('intake-section');
+                intakeSection.classList.remove('hidden');
+                
+                let vettingHtml = '';
+                if (data.vetting) {
+                    vettingHtml = `
+                        <div class="vetting-card">
+                            <h3>Vetted Profile: <span>${data.vetting.classification}</span></h3>
+                            
+                            <div class="vetting-grid">
+                                <div class="vetting-col">
+                                    <strong>Certifications Done</strong>
+                                    <ul>${data.vetting.certifications.map(c => `<li>📜 ${c}</li>`).join('')}</ul>
+                                </div>
+                                <div class="vetting-col">
+                                    <strong>Education & Study</strong>
+                                    <ul>${data.vetting.education.map(e => `<li>🎓 ${e}</li>`).join('')}</ul>
+                                </div>
+                            </div>
+
+                            <div class="vetting-block-item">
+                                <strong>Skills Extracted:</strong>
+                                <p class="vetting-skills">${data.vetting.skills.join(', ')}</p>
+                            </div>
+
+                            <div class="vetting-analysis-row">
+                                <div class="vetting-item plus-box">
+                                    <strong>Candidate Plus Points</strong>
+                                    <p>${data.vetting.plus_points}</p>
+                                </div>
+                                <div class="vetting-item gap-box">
+                                    <strong>Gaps to Ignore</strong>
+                                    <p>${data.vetting.ignorable_gaps}</p>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }
+                
+                // Prepend back button at the top of the middle panel
+                questionsContainer.innerHTML = `
+                    <button onclick="restoreBulkOverview()" class="btn btn-primary" style="margin-bottom:1.25rem; padding:0.5rem 1rem; width:auto; display:inline-block; font-size:0.85rem;">← Back to Overview</button>
+                    <div class="agent-verification-badge">
+                        <span class="badge-status status-${data.agent_2_status.toLowerCase().replace(/[^a-z]/g, '')}">🛡️ Agent 2: ${data.agent_2_status}</span>
+                        <p class="badge-feedback">${data.agent_2_feedback}</p>
+                    </div>
+                    ${vettingHtml}
+                `;
+                
+                // Hide submit answers button since they are already processed
+                btnSubmitAnswers.classList.add('hidden');
+                
+                // Render scores/synthesis in the right panel
+                renderResults(data.results);
+                showToast("Candidate profile details loaded!");
+            } catch (err) {
+                showToast("Failed to fetch candidate details.");
+            }
+        }
+
+        function restoreBulkOverview() {
+            if (lastBulkData) {
+                renderBulkResults(lastBulkData);
+            }
+        }
+    </script>
+</body>
+</html>
