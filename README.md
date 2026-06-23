@@ -18,7 +18,7 @@ Our system evaluates candidates through a multi-stage, network-resilient process
 
 ```mermaid
 graph TD
-    UI[Recruiter Dashboard] -->|File Upload| API[/api/upload Endpoint]
+    UI[Recruiter Dashboard] -->|File Upload| API["/api/upload Endpoint"]
     API --> Parse{File Type?}
     Parse -->|PDF| PDFParser[pypdf Extract Text]
     Parse -->|JSON/JSONL| JSONParser[JSON Schema Streamer]
